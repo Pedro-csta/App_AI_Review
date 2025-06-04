@@ -1,5 +1,3 @@
-%%writefile app.py
-
 import streamlit as st
 import pandas as pd
 import json
@@ -318,14 +316,18 @@ if analyze_button:
 
             for i, app_info in enumerate(urls_to_process_st):
                 display_role_url = f"{app_info['role']} ({app_info['url'][:50]}...)"
-                progress_status_text.info(f"Processando: {display_role_url}")
+                # progress_status_text.info(f"Processando: {display_role_url}") # Spinner global cobre isso
                 
                 app_id_st = get_app_id_from_url(app_info['url'])
-                current_app_proc_data = {"display_name": f"{app_info['role']}: {app_id_st}", "review_texts_str": "",
-                                         "review_scores": [], "sentiment_topic_analysis": {},
-                                         "feature_details": {}, "pain_delight_points": {}}
+                # Inicializa com valores padrão para evitar KeyErrors se algo falhar
+                current_app_proc_data = {
+                    "display_name": f"{app_info['role']}: {app_id_st if app_id_st else 'ID Inválido'}",
+                    "review_texts_str": "", "review_scores": [],
+                    "sentiment_topic_analysis": {}, "feature_details": {}, "pain_delight_points": {}
+                }
+
                 if app_id_st:
-                    step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"Coletando reviews de {app_info['role']}...")
+                    step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"({step_counter}/{total_steps}) Coletando reviews de {app_info['role']}...")
                     texts, scores, name = fetch_play_store_reviews_and_name(app_id_st, count=MAX_REVIEWS_TO_PROCESS)
                     display_name_st = f"{app_info['role']}: {name}" if app_info['role'] != name else name
                     current_app_proc_data["display_name"] = display_name_st
@@ -334,35 +336,40 @@ if analyze_button:
                     
                     if texts:
                         reviews_str_st = "\n".join(texts); current_app_proc_data["review_texts_str"] = reviews_str_st
-                        step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"Analisando sentimento/temas de {display_name_st}...")
+                        
+                        step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"({step_counter}/{total_steps}) Analisando sentimento/temas de {display_name_st}...")
                         current_app_proc_data["sentiment_topic_analysis"] = analyze_single_app_reviews(model, reviews_str_st, display_name_st)
-                        step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"Extraindo features de {display_name_st}...")
+                        
+                        step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"({step_counter}/{total_steps}) Extraindo features de {display_name_st}...")
                         current_app_proc_data["feature_details"] = extract_feature_details_from_reviews(model, display_name_st, reviews_str_st)
-                        step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"Extraindo dor/encantamento de {display_name_st}...")
+                        
+                        step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"({step_counter}/{total_steps}) Extraindo dor/encantamento de {display_name_st}...")
                         current_app_proc_data["pain_delight_points"] = extract_pain_delight_points_from_reviews(model, display_name_st, reviews_str_st)
                     else:
                         current_app_proc_data["sentiment_topic_analysis"] = {"app_name": display_name_st, "sentiment_summary": {"no_reviews": 100.0}, "top_topics": []}
                         current_app_proc_data["feature_details"] = {"elogiadas": [], "problematicas": [], "desejadas_ausentes": []}
                         current_app_proc_data["pain_delight_points"] = {"pontos_dor": [], "fatores_encantamento": []}
+                else: # app_id_st é None
+                     st.warning(f"URL inválida para {app_info['role']}: {app_info['url']}. Pulando este app.")
                 processed_data_list.append(current_app_proc_data)
             st.session_state.all_apps_processed_data = processed_data_list
 
             if processed_data_list:
-                if not st.session_state.my_app_name_for_synthesis_st and processed_data_list:
-                    st.session_state.my_app_name_for_synthesis_st = processed_data_list[0]["display_name"]
-                
-                # Geração de insights comparativos e gerais
-                step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info("Gerando análise de GAPs de funcionalidades...")
+                if not st.session_state.my_app_name_for_synthesis_st and processed_data_list: # Garante que my_app_name_for_synthesis_st seja definido
+                    first_valid_app_data = next((d for d in processed_data_list if d.get("display_name")), None)
+                    if first_valid_app_data : st.session_state.my_app_name_for_synthesis_st = first_valid_app_data["display_name"]
+                                
+                step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"({step_counter}/{total_steps}) Gerando análise de GAPs de funcionalidades...")
                 feature_details_list = [{"app_name": d["display_name"], **d["feature_details"]} for d in processed_data_list if d.get("feature_details")]
-                if feature_details_list: st.session_state.feature_gap_report = synthesize_feature_gap_analysis(model, feature_details_list, st.session_state.my_app_name_for_synthesis_st)
+                if feature_details_list and st.session_state.my_app_name_for_synthesis_st: st.session_state.feature_gap_report = synthesize_feature_gap_analysis(model, feature_details_list, st.session_state.my_app_name_for_synthesis_st)
 
-                step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info("Gerando comparativo de dor/encantamento...")
+                step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"({step_counter}/{total_steps}) Gerando comparativo de dor/encantamento...")
                 pain_delight_list = [{"app_name": d["display_name"], **d["pain_delight_points"]} for d in processed_data_list if d.get("pain_delight_points")]
-                if pain_delight_list: st.session_state.pain_delight_report = synthesize_pain_delight_comparison(model, pain_delight_list, st.session_state.my_app_name_for_synthesis_st)
+                if pain_delight_list and st.session_state.my_app_name_for_synthesis_st: st.session_state.pain_delight_report = synthesize_pain_delight_comparison(model, pain_delight_list, st.session_state.my_app_name_for_synthesis_st)
                 
-                step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info("Gerando análise qualitativa geral...")
+                step_counter += 1; progress_bar.progress(min(1.0, step_counter / total_steps)); progress_status_text.info(f"({step_counter}/{total_steps}) Gerando análise qualitativa geral...")
                 sent_topic_list = [d["sentiment_topic_analysis"] for d in processed_data_list if d.get("sentiment_topic_analysis") and "no_reviews" not in d["sentiment_topic_analysis"].get("sentiment_summary", {})]
-                if sent_topic_list: st.session_state.overall_qualitative_report = generate_competitive_qualitative_analysis(model, sent_topic_list, st.session_state.my_app_name_for_synthesis_st)
+                if sent_topic_list and st.session_state.my_app_name_for_synthesis_st: st.session_state.overall_qualitative_report = generate_competitive_qualitative_analysis(model, sent_topic_list, st.session_state.my_app_name_for_synthesis_st)
             
             st.session_state.analysis_complete = True
             progress_status_text.success("Análise Concluída!")
