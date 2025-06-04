@@ -1,6 +1,0 @@
-streamlit
-pandas
-google-generativeai
-google-play-scraper
-matplotlib
-seaborn
