@@ -23,13 +23,18 @@ if not gemini_api_key:
 else:
     try:
         genai.configure(api_key=gemini_api_key)
-        
-        # TENTATIVA 1: Inicializar sem safety_settings personalizados para diagnóstico
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        # st.success("Modelo Gemini inicializado com sucesso (configurações de segurança padrão).") # Removido para não poluir, erro falará por si.
+        safety_settings_permissive = [
+            {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmProbability.BLOCK_ONLY_HIGH},
+            {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmProbability.BLOCK_ONLY_HIGH},
+            {"category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, "threshold": HarmProbability.BLOCK_ONLY_HIGH},
+            {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": HarmProbability.BLOCK_ONLY_HIGH},
+        ]
+        # TENTATIVA 1: Inicializar sem safety_settings personalizados para diagnóstico (se a linha abaixo falhar)
+        # model = genai.GenerativeModel('gemini-1.5-flash-latest') 
+        # Se a linha acima funcionar, pode tentar reabilitar com safety_settings:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest', safety_settings=safety_settings_permissive)
 
     except Exception as e:
-        # Fornecer mais detalhes do erro
         st.error(f"Falha ao configurar Gemini. Tipo do Erro: {type(e)}. Detalhes: {repr(e)}")
         st.stop()
 
@@ -60,7 +65,9 @@ def parse_short_name_from_id(app_id_str):
         return app_id_str
     except Exception: return app_id_str
 
-@st.cache_data(show_spinner="Buscando reviews e nome do app...") # Reativar cache após depuração se desejado
+# Removido @st.cache_data de fetch_play_store_data para depurar problema de dados iguais.
+# Reative se o problema de dados iguais for resolvido e o cache for benéfico.
+# @st.cache_data(show_spinner="Buscando reviews e nome do app...")
 def fetch_play_store_data(_app_id, lang='pt', country='br', count=MAX_REVIEWS_TO_PROCESS):
     if not _app_id: return [], [], _app_id, _app_id
     official_title = _app_id 
@@ -79,11 +86,9 @@ def fetch_play_store_data(_app_id, lang='pt', country='br', count=MAX_REVIEWS_TO
         return review_texts, review_scores, official_title, short_name_from_id
     except Exception as e: st.error(f"Erro ao buscar reviews para {official_title} ({_app_id}): {e}"); return [],[],official_title, short_name_from_id
 
-# --- Funções de Análise com Gemini (Corpos como na versão anterior, com hash_funcs e COMMON_NAME_INSTRUCTION) ---
-# (Omitirei os corpos para brevidade, mas eles são os mesmos da última resposta que funcionou com hash_funcs)
+# --- Funções de Análise com Gemini ---
 @st.cache_data(hash_funcs={genai.GenerativeModel: lambda _: None}, show_spinner="Analisando sentimento e temas...")
 def analyze_single_app_reviews(gemini_model_instance, reviews_text, app_name=""):
-    # ... (Implementação completa como na resposta anterior, incluindo o fix de JSON e truncamento de reviews_text[:10000]) ...
     err_payload = {"app_name":app_name,"sentiment_summary":{"error":100.0, "message":"Falha na análise de sent/temas"},"top_topics":[]}
     if not reviews_text.strip(): return {"app_name":app_name,"sentiment_summary":{"no_reviews":100.0},"top_topics":[]}
     reviews_sample = str(reviews_text)[:10000]; num_reviews = len(reviews_sample.splitlines()); ctx = f"do app '{app_name}'" if app_name else "de um app"
@@ -117,11 +122,6 @@ REVIEWS: {reviews_sample}
         return d
     except json.JSONDecodeError as e: st.error(f"JSONError (sent/temas) '{app_name}': {e}. Resposta (limitada):\n'{str(response_text_debug)[:200]}...'"); return err_payload
     except Exception as e: st.error(f"Erro (sent/temas) '{app_name}': {e}. Resposta (limitada):\n'{str(response_text_debug)[:200]}...'"); return err_payload
-
-# ... (TODAS AS OUTRAS FUNÇÕES DE ANÁLISE E SÍNTESE COMO NA ÚLTIMA VERSÃO COMPLETA)
-# Lembre-se que elas devem ter `hash_funcs={genai.GenerativeModel: lambda _: None}` se usam @st.cache_data e recebem o model.
-# E as que esperam JSON como output devem usar `generation_config=generation_config_json` na chamada `generate_content`.
-# As que geram Markdown NÃO devem usar `generation_config_json`.
 
 @st.cache_data(hash_funcs={genai.GenerativeModel: lambda _: None}, show_spinner="Extraindo features...")
 def extract_feature_details_from_reviews(gemini_model_instance, app_name, review_texts_str):
@@ -215,8 +215,8 @@ Dados: {all_apps_collected_data_str}"""
     try: return gemini_model_instance.generate_content(p).text.strip()
     except Exception as e: st.error(f"Erro (perfil público): {e}"); return "Erro perfil público."
 
-# --- Funções de Visualização (mantidas como antes) ---
-def plot_comparative_sentiment_chart(all_apps_sentiment_data): # (Corpo como antes)
+# --- Funções de Visualização ---
+def plot_comparative_sentiment_chart(all_apps_sentiment_data):
     if not all_apps_sentiment_data: st.info("Nenhum dado de sentimento para plotar."); return
     plot_data = {}; categories = ['positive','neutral','negative','no_sentiment_detected']
     display_labels = {'positive':'Positivo','neutral':'Neutro','negative':'Negativo','no_sentiment_detected':'Não Detectado'}
@@ -232,14 +232,18 @@ def plot_comparative_sentiment_chart(all_apps_sentiment_data): # (Corpo como ant
     colors={'Positivo':'#4CAF50','Neutro':'#FFC107','Negativo':'#F44336','Não Detectado':'#9E9E9E'}
     df_filtered=df[[c for c in df.columns if c in df and df[c].sum()>0 and c in colors]]
     if df_filtered.empty: st.info("Dados de sentimento zerados."); return
+    
     fig,ax=plt.subplots(figsize=(max(10,len(app_names)*2.0),6))
     df_filtered.plot(kind='bar',ax=ax,color=[colors[c] for c in df_filtered.columns])
     ax.set_title('Análise Comparativa de Sentimentos (%)',fontsize=15)
     ax.set_ylabel('Porcentagem de Reviews (%)');ax.set_xlabel('Aplicativos')
-    ax.legend(title='Sentimento');ax.tick_params(axis='x',rotation=30,ha='right',labelsize=9)
+    ax.legend(title='Sentimento')
+    # CORREÇÃO DO ValueError: Usar plt.setp para manipular rótulos do eixo X
+    if ax.get_xticklabels():
+        plt.setp(ax.get_xticklabels(), rotation=30, ha="right", rotation_mode="anchor", fontsize=9)
     plt.tight_layout();st.pyplot(fig)
 
-def plot_topics_chart_for_app(app_analysis_data): # (Corpo como antes)
+def plot_topics_chart_for_app(app_analysis_data):
     app_n=app_analysis_data.get('app_name','App Desconhecido');topics_data=app_analysis_data.get('top_topics',[])
     if not topics_data: st.info(f"Nenhum tema para {app_n}."); return
     parsed_topics=[]
@@ -260,7 +264,7 @@ def plot_topics_chart_for_app(app_analysis_data): # (Corpo como antes)
     ax.legend(['Positivo','Neutro','Negativo'],loc='lower right',frameon=False)
     plt.tight_layout();st.pyplot(fig)
 
-def plot_ratings_distribution_chart(app_name,review_scores): # (Corpo como antes)
+def plot_ratings_distribution_chart(app_name,review_scores):
     if not review_scores: st.info(f"Nenhuma nota para {app_name}."); return "",None
     score_counts=Counter(review_scores);ratings_df=pd.DataFrame({'Estrelas':range(1,6)})
     counts_df=pd.DataFrame(list(score_counts.items()),columns=['Estrelas','Contagem']).sort_values(by='Estrelas')
@@ -288,28 +292,36 @@ with st.sidebar:
     st.header("🔗 URLs dos Aplicativos")
     my_app_url_st = st.text_input("URL Seu App (Foco):", key="my_app_url")
     competitor_urls_st = [st.text_input(f"URL Concorrente {i+1}:",key=f"comp{i}_url") for i in range(3)]
-    competitor_urls_st = [url for url in competitor_urls_st if url]
+    competitor_urls_st = [url for url in competitor_urls_st if url] # Filtra strings vazias
     analyze_button = st.button("🔍 Analisar Aplicativos", type="primary", use_container_width=True)
 
-default_session_state = {'analysis_complete':False,'all_apps_processed_data':[],'feature_gap_report':"",'pain_delight_report':"",'overall_qualitative_data':{},'swot_report':"",'audience_profile_report':"",'my_app_name_for_synthesis':""}
-for k,v in default_session_state.items():
-    if k not in st.session_state: st.session_state[k]=v
+# Inicialização do Estado da Sessão
+default_session_state = {
+    'analysis_complete': False, 'all_apps_processed_data': [], 'feature_gap_report': "",
+    'pain_delight_report': "", 'overall_qualitative_data': {}, 'swot_report': "",
+    'audience_profile_report': "", 'my_app_name_for_synthesis': ""
+}
+for k, v in default_session_state.items():
+    if k not in st.session_state: st.session_state[k] = v
 
 if analyze_button:
     if not my_app_url_st: st.sidebar.warning("Insira a URL do seu app.")
     elif not model: st.error("Modelo Gemini não inicializado.")
     else:
-        for k,v in default_session_state.items(): st.session_state[k]=v
+        # Resetar estado para nova análise
+        for k, v_default in default_session_state.items(): st.session_state[k] = v_default
+        
         urls_to_process=[{"url":my_app_url_st,"role":"Meu App"}]
         urls_to_process.extend([{"url":url,"role":f"Concorrente {i+1}"} for i,url in enumerate(competitor_urls_st)])
-        prog_bar=st.sidebar.progress(0); prog_text=st.sidebar.empty()
-        total_steps=len(urls_to_process)*4 + 6 
         
-        # DEBUG na Sidebar
+        prog_bar=st.sidebar.progress(0); prog_text=st.sidebar.empty()
+        total_steps=len(urls_to_process)*4 + 6 # fetch + 3 AI/app + 6 global AI
+        
+        # Adicionando DEBUG INICIAL na Sidebar
         st.sidebar.markdown("---")
-        st.sidebar.subheader("📢 DEBUG DA COLETA")
+        st.sidebar.subheader("📢 DEBUG DA COLETA (Sidebar)")
         debug_placeholder = st.sidebar.empty()
-        cumulative_debug_log = ""
+        cumulative_debug_log = "" # Para acumular logs de debug
         
         with st.spinner("Análise em progresso... pode levar minutos."):
             processed_data_list=[]
@@ -321,25 +333,29 @@ if analyze_button:
                 current_debug_log_for_app = f"**Processando: {app_info['role']}**\n- URL: {app_info['url']}\n- App ID Parseado: {app_id}\n"
                 
                 initial_short_name = parse_short_name_from_id(app_id) if app_id else "ID_Inválido"
-                app_data_current={"display_name":f"{app_info['role']}: {initial_short_name}","review_texts_str":"","review_scores":[],"sentiment_topic_analysis":{},"feature_details":{},"pain_delight_points":{}}
+                # Inicializa com nome baseado no ID para o caso de falha na busca do título
+                app_data_current={"display_name":f"{app_info['role']}: {initial_short_name}",
+                                  "review_texts_str":"","review_scores":[],
+                                  "sentiment_topic_analysis":{},"feature_details":{},"pain_delight_points":{}}
                 
                 if app_id:
                     step_counter+=1; prog_bar.progress(min(1.0,step_counter/total_steps)); prog_text.info(f"({step_counter}/{total_steps}) Coleta: {app_info['role']} ({initial_short_name})")
                     
-                    texts,scores,official_title,short_name_id = fetch_play_store_data(app_id)
+                    texts,scores,official_title,short_name_id = fetch_play_store_data(app_id) # short_name_id já vem parseado
                     current_debug_log_for_app += f"- Título Oficial Retornado: {official_title}\n- Short Name do ID Retornado: {short_name_id}\n"
                     current_debug_log_for_app += f"- Reviews Coletados: {len(texts)}, Notas Coletadas: {len(scores)}\n"
                     if texts: current_debug_log_for_app += f"- Amostra Review[0]: '{texts[0][:50]}...'\n- Amostra Notas[:3]: {scores[:3]}\n"
                     else: current_debug_log_for_app += "- Nenhum review/nota coletado.\n"
                     
+                    # Lógica de Nome de Exibição (display_name) REFINADA
                     if app_info['role'] == "Meu App":
                         d_name = f"Meu App: {official_title if official_title and official_title != app_id else short_name_id}"
                         if short_name_id and short_name_id.lower() not in d_name.lower() and app_id.lower() != official_title.lower() :
                              d_name += f" [{short_name_id}]"
-                    else: 
-                        d_name = f"{app_info['role']}: {short_name_id}"
+                    else: # Concorrentes
+                        d_name = f"{app_info['role']}: {short_name_id}" # Prioriza short_name_id
                         if official_title and official_title != app_id and official_title.lower() != short_name_id.lower():
-                             d_name += f" ({official_title})"
+                             d_name += f" ({official_title})" # Adiciona título oficial se útil
                     
                     current_debug_log_for_app += f"- Display Name Gerado: {d_name}\n"
                     app_data_current.update({"display_name":d_name,"review_scores":scores})
@@ -356,17 +372,17 @@ if analyze_button:
                     else:app_data_current["sentiment_topic_analysis"]={"app_name":d_name,"sentiment_summary":{"no_reviews":100.0},"top_topics":[]}
                 else:st.warning(f"URL inválida para {app_info['role']}. Pulando.")
                 
-                cumulative_debug_log += current_debug_log_for_app + "---\n"
-                debug_placeholder.markdown(cumulative_debug_log)
+                cumulative_debug_log += current_debug_log_for_app + "---\n" # Acumula logs de debug
+                debug_placeholder.markdown(cumulative_debug_log) # Exibe logs acumulados
                 processed_data_list.append(app_data_current)
             st.session_state.all_apps_processed_data=processed_data_list
 
-            # (Restante da lógica de SÍNTESES GLOBAIS e ATUALIZAÇÃO DE ESTADO como antes)
-            # ... (omitido por brevidade, mas é crucial e permanece o mesmo da última versão) ...
-            if processed_data_list:
+            if processed_data_list: # Início das Sínteses Globais
                 my_app_n=st.session_state.my_app_name_for_synthesis
-                if not my_app_n and processed_data_list and processed_data_list[0]:my_app_n=processed_data_list[0]["display_name"];st.session_state.my_app_name_for_synthesis=my_app_n
+                if not my_app_n and processed_data_list and processed_data_list[0]: # Fallback se my_app_name não foi definido
+                    my_app_n=processed_data_list[0]["display_name"];st.session_state.my_app_name_for_synthesis=my_app_n
                 
+                # (Resto da lógica de SÍNTESES GLOBAIS e ATUALIZAÇÃO DE ESTADO como antes)
                 step_counter+=1; prog_bar.progress(min(1.0,step_counter/total_steps)); prog_text.info(f"({step_counter}/{total_steps}) GAPs Features...")
                 feat_l=[{"app_name":d["display_name"],**d["feature_details"]} for d in processed_data_list if d.get("feature_details")]
                 if feat_l and my_app_n:st.session_state.feature_gap_report=synthesize_feature_gap_analysis(model,feat_l,my_app_n)
@@ -391,7 +407,7 @@ if analyze_button:
             
             st.session_state.analysis_complete=True
             prog_text.success("Análise Concluída!");prog_bar.progress(1.0)
-            # debug_placeholder.empty() # Comente ou remova para manter os logs de debug visíveis após a execução
+            # debug_placeholder.empty() # Mantém os logs de debug visíveis na sidebar após a execução
 
 # --- Seção de Display dos Resultados (como antes, com as 7 abas) ---
 if st.session_state.analysis_complete and st.session_state.all_apps_processed_data:
